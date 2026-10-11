@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1791737044531,
+      "tag": "0000_flimsy_jack_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1791737192954,
+      "tag": "0001_fantastic_gideon",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791738088677,
+      "tag": "0002_safety_guards",
+      "breakpoints": true
+    }
+  ]
+}
