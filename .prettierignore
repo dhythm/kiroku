@@ -1,0 +1,9 @@
+node_modules
+dist
+.wrangler
+src/routeTree.gen.ts
+screenshots
+test-results
+playwright-report
+package-lock.json
+drizzle/meta

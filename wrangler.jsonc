@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kiroku",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-10-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kiroku",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "drizzle",
+    },
+  ],
+  "vars": {
+    "AI_ENABLED": "false",
+    "FREE_PLAN_CONFIRMED": "false",
+    "AI_DAILY_BUDGET": "5000",
+    "AI_SESSION_DAILY_LIMIT": "3",
+  },
+}
