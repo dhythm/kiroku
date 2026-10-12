@@ -3,7 +3,7 @@ export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: false,
   workers: 1,
-  use: { baseURL: 'http://127.0.0.1:3000', trace: 'retain-on-failure' },
+  use: { baseURL: 'http://127.0.0.1:3100', trace: 'retain-on-failure' },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
     {
@@ -13,9 +13,11 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      process.env.TEST_PREVIEW === '1' ? 'npm run preview' : 'npm run dev',
-    url: 'http://127.0.0.1:3000',
-    reuseExistingServer: !process.env.CI && process.env.TEST_PREVIEW !== '1',
+      process.env.TEST_PREVIEW === '1'
+        ? 'npm run preview -- --port 3100 --strictPort'
+        : 'npm run dev -- --port 3100 --strictPort',
+    url: 'http://127.0.0.1:3100',
+    reuseExistingServer: false,
     timeout: 120000,
   },
 })

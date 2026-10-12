@@ -1,0 +1,20 @@
+CREATE TRIGGER notes_retired_insert BEFORE INSERT ON notes
+WHEN EXISTS (SELECT 1 FROM anonymous_claims WHERE owner = NEW.owner) BEGIN
+  SELECT RAISE(ABORT, 'OWNER_RETIRED');
+END;
+
+CREATE TRIGGER notes_owner_update BEFORE UPDATE OF owner ON notes
+WHEN NEW.owner != OLD.owner BEGIN
+  SELECT CASE WHEN (SELECT COUNT(*) FROM notes WHERE owner = NEW.owner) >= 100 THEN RAISE(ABORT, 'NOTE_LIMIT') END;
+  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM anonymous_claims WHERE owner = OLD.owner AND 'user:' || user_id = NEW.owner) THEN RAISE(ABORT, 'OWNER_RETIRED') END;
+END;
+
+CREATE TRIGGER notes_retired_edit BEFORE UPDATE ON notes
+WHEN NEW.owner = OLD.owner AND EXISTS (SELECT 1 FROM anonymous_claims WHERE owner = OLD.owner) BEGIN
+  SELECT RAISE(ABORT, 'OWNER_RETIRED');
+END;
+
+CREATE TRIGGER notes_retired_delete BEFORE DELETE ON notes
+WHEN EXISTS (SELECT 1 FROM anonymous_claims WHERE owner = OLD.owner) BEGIN
+  SELECT RAISE(ABORT, 'OWNER_RETIRED');
+END;

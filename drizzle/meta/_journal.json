@@ -22,6 +22,34 @@
       "when": 1791738088677,
       "tag": "0002_safety_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791767846352,
+      "tag": "0003_famous_kylun",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791767898511,
+      "tag": "0004_account_safety",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791768020554,
+      "tag": "0005_solid_raider",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791768830475,
+      "tag": "0006_retired_ai_safety",
+      "breakpoints": true
     }
   ]
 }

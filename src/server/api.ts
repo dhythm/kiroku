@@ -17,8 +17,18 @@ import {
   validateNote,
 } from '../lib/security'
 import type { AiStatus } from '../lib/types'
+import {
+  authConfigured,
+  clearAuthCookies,
+  createAuth,
+  currentUser,
+  importAnonymous,
+  pendingCount,
+  resolveOwner,
+  type AuthEnv,
+} from './auth'
 
-export interface AppEnv {
+export interface AppEnv extends AuthEnv {
   DB: D1Database
   AI?: {
     run(
@@ -84,6 +94,53 @@ export async function handleApi(
   try {
     const url = new URL(request.url)
     assertTransport(url)
+    if (url.pathname.startsWith('/api/auth/')) {
+      const auth = createAuth(env)
+      if (url.origin !== env.BETTER_AUTH_URL)
+        throw new ApiError(403, 'ログイン用URLが一致しません。')
+      if (
+        url.pathname === '/api/auth/callback/google' &&
+        request.method === 'GET'
+      ) {
+        // Cross-site navigation is essential here. Library verifies state cookie + PKCE + code/ID token.
+        return auth.handler(request)
+      }
+      if (
+        url.pathname !== '/api/auth/sign-in/social' ||
+        request.method !== 'POST'
+      )
+        throw new ApiError(404, 'この認証操作は公開していません。')
+      assertSameOrigin(request)
+      const input = await readJson(request)
+      if (
+        !input ||
+        typeof input !== 'object' ||
+        Object.keys(input).some((k) => k !== 'provider') ||
+        (input as { provider?: unknown }).provider !== 'google'
+      )
+        throw new ApiError(400, 'Googleログインだけを利用できます。')
+      if (
+        await currentUser(request, env).catch((error) => {
+          if (error instanceof ApiError && error.status === 401) return null
+          throw error
+        })
+      )
+        throw new ApiError(
+          409,
+          'アカウントを切り替える前にログアウトしてください。',
+        )
+      return auth.handler(
+        new Request(request.url, {
+          method: 'POST',
+          headers: request.headers,
+          body: JSON.stringify({
+            provider: 'google',
+            callbackURL: '/',
+            errorCallbackURL: '/?login=failed',
+          }),
+        }),
+      )
+    }
     if (request.headers.get('sec-fetch-site') === 'cross-site')
       throw new ApiError(403, '外部サイトからは利用できません。')
     if (
@@ -91,17 +148,103 @@ export async function handleApi(
       request.headers.get('origin') !== url.origin
     )
       throw new ApiError(403, '外部サイトからは利用できません。')
+    if (url.pathname === '/api/login-status' && request.method === 'GET')
+      return json({ googleEnabled: authConfigured(env) })
     if (url.pathname === '/api/session' && request.method === 'GET') {
       if (!env.DB) throw new ApiError(503, 'データベースが未設定です。')
-      const token = readToken(request) ?? createToken()
-      return json({ ok: true }, 200, sessionCookie(token, url))
+      const user = await currentUser(request, env)
+      let token = readToken(request)
+      if (
+        token &&
+        !user &&
+        (await env.DB.prepare(
+          'SELECT owner FROM anonymous_claims WHERE owner = ?',
+        )
+          .bind(await ownerHash(token))
+          .first())
+      )
+        token = null
+      token ??= createToken()
+      return json(
+        {
+          ok: true,
+          user,
+          googleEnabled: authConfigured(env),
+          pending: user ? await pendingCount(env, user.id) : 0,
+        },
+        200,
+        sessionCookie(token, url),
+      )
     }
     if (!env.DB) throw new ApiError(503, 'データベースが未設定です。')
-    const token = readToken(request)
-    if (!token) throw new ApiError(401, 'セッションを再読み込みしてください。')
-    const owner = await ownerHash(token)
-    const db = drizzle(env.DB)
     if (request.method !== 'GET') assertSameOrigin(request)
+    if (url.pathname === '/api/logout' && request.method === 'POST') {
+      if (!authConfigured(env))
+        throw new ApiError(503, 'Googleログインは未設定です。')
+      const user = await currentUser(request, env).catch((error) => {
+        if (error instanceof ApiError && error.status === 401) return null
+        throw error
+      })
+      if (user) await importAnonymous(request, env, user.id)
+      const verified = await createAuth(env).api.getSession({
+        headers: request.headers,
+        query: { disableCookieCache: true },
+      })
+      const logout = await createAuth(env).handler(
+        new Request(url.origin + '/api/auth/sign-out', {
+          method: 'POST',
+          headers: request.headers,
+          body: '{}',
+        }),
+      )
+      if (!logout.ok)
+        throw new ApiError(
+          503,
+          'ログアウトを確認できませんでした。再試行してください。',
+        )
+      // Library sign-out swallows deletion errors; confirm revocation in D1.
+      if (
+        verified &&
+        (await env.DB.prepare('SELECT id FROM auth_session WHERE id = ?')
+          .bind(verified.session.id)
+          .first())
+      )
+        throw new ApiError(
+          503,
+          'ログアウトを確認できませんでした。再試行してください。',
+        )
+      const response = json({ ok: true })
+      for (const c of logout.headers.getSetCookie())
+        response.headers.append('Set-Cookie', c)
+      clearAuthCookies(request, response.headers)
+      return response
+    }
+    const { owner, user } = await resolveOwner(request, env)
+    const db = drizzle(env.DB)
+    if (url.pathname === '/api/import' && request.method === 'POST') {
+      if (!user)
+        throw new ApiError(401, '引き継ぎにはGoogleログインが必要です。')
+      const result = await importAnonymous(request, env, user.id)
+      return json(
+        { moved: result.moved, pending: result.pending },
+        200,
+        result.cookie,
+      )
+    }
+    if (url.pathname === '/api/pending' && request.method === 'GET') {
+      if (!user) throw new ApiError(401, 'ログインしてください。')
+      const offset = boundedInt(url.searchParams.get('offset') ?? '0', 0, 1000)
+      if (offset === null) throw new ApiError(400, 'ページ指定が不正です。')
+      const result = await env.DB.prepare(
+        'SELECT n.id, n.title, n.body FROM notes n INNER JOIN anonymous_claims c ON c.owner = n.owner WHERE c.user_id = ? ORDER BY n.created_at, n.id LIMIT 20 OFFSET ?',
+      )
+        .bind(user.id, offset)
+        .all()
+      return json({
+        notes: result.results,
+        total: await pendingCount(env, user.id),
+      })
+    }
     if (url.pathname === '/api/status' && request.method === 'GET') {
       const config = aiConfig(env)
       if (config.enabled) {
@@ -327,6 +470,14 @@ export async function handleApi(
       return json(
         { error: 'メモ数の上限に達しました。不要なメモを削除してください。' },
         429,
+      )
+    if (message.includes('OWNER_RETIRED'))
+      return json(
+        {
+          error:
+            '匿名メモはアカウントへ引き継ぎ済みです。再読み込みしてください。',
+        },
+        401,
       )
     return json(
       {

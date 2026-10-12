@@ -15,3 +15,8 @@ export type NoteInput = {
   version?: number
 }
 export type AiStatus = { enabled: boolean; reason: string; maxChars: number }
+export type SessionInfo = {
+  user: { id: string; name: string; email: string } | null
+  googleEnabled: boolean
+  pending: number
+}

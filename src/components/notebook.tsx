@@ -14,7 +14,15 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import type { AiStatus, Note, NoteInput } from '../lib/types'
+import type { AiStatus, Note, NoteInput, SessionInfo } from '../lib/types'
+class ApiFailure extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message)
+  }
+}
 
 async function api<T>(
   path: string,
@@ -43,7 +51,11 @@ async function api<T>(
     )
   }
   const data = (await response.json()) as T & { error?: string }
-  if (!response.ok) throw new Error(data.error ?? '通信に失敗しました。')
+  if (!response.ok) {
+    if (response.status === 401)
+      window.dispatchEvent(new Event('kiroku-session-invalid'))
+    throw new ApiFailure(response.status, data.error ?? '通信に失敗しました。')
+  }
   return data
 }
 const blank: NoteInput = { title: '', body: '', tags: [] }
@@ -67,6 +79,16 @@ export function Notebook() {
   const [showPrivacy, setShowPrivacy] = useState(false)
   const [ready, setReady] = useState(false)
   const [filtering, setFiltering] = useState(false)
+  const [session, setSession] = useState<SessionInfo | null>(null)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [pendingNotes, setPendingNotes] = useState<
+    { id: string; title: string; body: string }[]
+  >([])
+  const [pendingOffset, setPendingOffset] = useState<number | null>(null)
+  const identity = useRef<string | null>(null)
+  const authEpoch = useRef(0)
+  const authChannel = useRef<BroadcastChannel | null>(null)
+  const [authUnverified, setAuthUnverified] = useState(false)
   const searchSequence = useRef(0)
   const titleRef = useRef<HTMLInputElement>(null)
   const parsedTags = [
@@ -88,15 +110,39 @@ export function Notebook() {
 
   useEffect(() => {
     let alive = true
+    const epoch = authEpoch.current
+    if (new URL(window.location.href).searchParams.get('login') === 'failed') {
+      setError(
+        'Googleログインが完了しませんでした。取消または認証エラーです。メモはそのまま残っています。',
+      )
+      window.history.replaceState(null, '', '/')
+    }
     void (async () => {
       try {
-        await api('/api/session')
+        const login = await api<{ googleEnabled: boolean }>('/api/login-status')
+        if (alive)
+          setSession({
+            user: null,
+            googleEnabled: login.googleEnabled,
+            pending: 0,
+          })
+        const account = await api<SessionInfo>('/api/session')
+        if (account.user) {
+          const imported = await api<{ pending: number }>(
+            '/api/import',
+            'POST',
+            {},
+          )
+          account.pending = imported.pending
+        }
+        identity.current = account.user?.id ?? 'anonymous'
         const [list, ai] = await Promise.all([
           api<{ notes: Note[] }>('/api/notes'),
           api<AiStatus>('/api/status'),
         ])
-        if (alive) {
+        if (alive && epoch === authEpoch.current) {
           setNotes(list.notes)
+          setSession(account)
           setStatus(ai)
           setReady(true)
         }
@@ -108,6 +154,57 @@ export function Notebook() {
     })()
     return () => {
       alive = false
+    }
+  }, [])
+  useEffect(() => {
+    const hidePrivateData = () => {
+      authEpoch.current++
+      searchSequence.current++
+      setNotes([])
+      setSelected(null)
+      setDraft(blank)
+      setTagText('')
+      setEditor(false)
+      setReady(false)
+      setPendingNotes([])
+      setPendingOffset(null)
+    }
+    const invalid = () => {
+      hidePrivateData()
+      setSession((s) => (s ? { ...s, user: null, pending: 0 } : null))
+    }
+    const check = async () => {
+      if (identity.current === null) return
+      try {
+        const account = await api<SessionInfo>('/api/session')
+        if ((account.user?.id ?? 'anonymous') !== identity.current) {
+          hidePrivateData()
+          window.location.reload()
+        } else setAuthUnverified(false)
+      } catch (e) {
+        if (e instanceof ApiFailure && e.status === 401) invalid()
+        else setAuthUnverified(true)
+        setError(
+          'ログイン状態を確認できません。データ表示を停止しました。再読み込みまたは再ログインしてください。',
+        )
+      }
+    }
+    const channel =
+      typeof BroadcastChannel !== 'undefined'
+        ? new BroadcastChannel('kiroku-auth')
+        : null
+    authChannel.current = channel
+    if (channel)
+      channel.onmessage = () => {
+        hidePrivateData()
+        window.location.reload()
+      }
+    window.addEventListener('kiroku-session-invalid', invalid)
+    window.addEventListener('focus', check)
+    return () => {
+      channel?.close()
+      window.removeEventListener('kiroku-session-invalid', invalid)
+      window.removeEventListener('focus', check)
     }
   }, [])
   useEffect(() => {
@@ -153,6 +250,73 @@ export function Notebook() {
       !dirty || window.confirm('未保存の変更があります。変更を破棄しますか？')
     )
   }
+  async function login() {
+    if (!canLeave()) return
+    setAuthBusy(true)
+    setError('')
+    try {
+      const result = await api<{ url: string }>(
+        '/api/auth/sign-in/social',
+        'POST',
+        { provider: 'google' },
+      )
+      const destination = new URL(result.url)
+      if (
+        destination.protocol !== 'https:' ||
+        destination.hostname !== 'accounts.google.com'
+      )
+        throw new Error('ログイン先を確認できませんでした。')
+      window.location.assign(destination.href)
+    } catch (e) {
+      setError((e as Error).message)
+      setAuthBusy(false)
+    }
+  }
+  async function logout() {
+    if (!canLeave()) return
+    setAuthBusy(true)
+    setError('')
+    try {
+      await api('/api/logout', 'POST', {})
+      setNotes([])
+      setDraft(blank)
+      setSelected(null)
+      setEditor(false)
+      authChannel.current?.postMessage('signed-out')
+      window.location.replace('/')
+    } catch (e) {
+      setError((e as Error).message)
+      setAuthBusy(false)
+    }
+  }
+  async function retryImport() {
+    const epoch = authEpoch.current
+    setAuthBusy(true)
+    try {
+      const result = await api<{ pending: number }>('/api/import', 'POST', {})
+      const list = await api<{ notes: Note[] }>('/api/notes')
+      if (epoch !== authEpoch.current) return
+      setSession((s) => (s ? { ...s, pending: result.pending } : s))
+      setNotes(list.notes)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+  async function viewPending(offset: number) {
+    const epoch = authEpoch.current
+    try {
+      const result = await api<{ notes: typeof pendingNotes }>(
+        '/api/pending?offset=' + offset,
+      )
+      if (epoch !== authEpoch.current) return
+      setPendingNotes(result.notes)
+      setPendingOffset(offset)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
   function open(note: Note | null) {
     if (busy || !canLeave()) return
     setSelected(note)
@@ -165,6 +329,7 @@ export function Notebook() {
     window.setTimeout(() => titleRef.current?.focus(), 0)
   }
   async function save() {
+    const epoch = authEpoch.current
     setError('')
     setBusy('save')
     try {
@@ -173,6 +338,7 @@ export function Notebook() {
         selected ? 'PUT' : 'POST',
         { ...draft, tags: parsedTags, version: selected?.version },
       )
+      if (epoch !== authEpoch.current) return
       setSelected(result.note)
       setDraft(result.note)
       setTagText(result.note.tags.join(', '))
@@ -189,6 +355,7 @@ export function Notebook() {
     }
   }
   async function summarize() {
+    const epoch = authEpoch.current
     if (!selected) return
     setError('')
     setBusy('ai')
@@ -198,6 +365,7 @@ export function Notebook() {
         'POST',
         {},
       )
+      if (epoch !== authEpoch.current) return
       setSelected(note)
       setNotes((list) => list.map((n) => (n.id === note.id ? note : n)))
     } catch (e) {
@@ -232,6 +400,21 @@ export function Notebook() {
       setBusy(null)
     }
   }
+  if (authUnverified)
+    return (
+      <main className="fatal" role="status">
+        <h1>ログイン状態を確認できません</h1>
+        <p>
+          未保存の入力は保持し、データの表示を一時停止しています。通信が戻ったら同じアカウントで確認してください。
+        </p>
+        <button
+          className="primary-button"
+          onClick={() => window.dispatchEvent(new Event('focus'))}
+        >
+          接続を再確認
+        </button>
+      </main>
+    )
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -275,7 +458,7 @@ export function Notebook() {
           <div className="quiet-card">
             <LockKeyhole size={17} />
             <p>
-              このブラウザだけの
+              {session?.user ? '同じアカウントで使う' : 'このブラウザだけの'}
               <br />
               <strong>あなたのメモ帳</strong>
             </p>
@@ -294,10 +477,44 @@ export function Notebook() {
             <ChevronRight size={13} />
             <strong>メモ</strong>
           </span>
-          <span className="private-badge">
-            <span />
-            プライベートな記録
-          </span>
+          <div className="account-controls">
+            {session?.user ? (
+              <>
+                <span className="account-name" title={session.user.email}>
+                  {session.user.name || session.user.email}
+                </span>
+                <button
+                  className="auth-button"
+                  disabled={authBusy}
+                  onClick={() => void logout()}
+                >
+                  ログアウト
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className="auth-button"
+                  disabled={!session?.googleEnabled || authBusy}
+                  onClick={() => void login()}
+                >
+                  {authBusy ? '接続中…' : 'Googleでログイン'}
+                </button>
+                {session && !session.googleEnabled && (
+                  <span className="auth-unavailable">未設定</span>
+                )}
+                {!ready && session?.googleEnabled && (
+                  <button
+                    className="auth-button"
+                    disabled={authBusy}
+                    onClick={() => void logout()}
+                  >
+                    匿名に戻る
+                  </button>
+                )}
+              </>
+            )}
+          </div>
           <button
             className="mobile-privacy"
             aria-label="保存とプライバシー"
@@ -306,7 +523,24 @@ export function Notebook() {
             <LockKeyhole size={18} />
           </button>
         </header>
-        <main className={'workspace ' + (editor ? 'editor-open' : '')}>
+        {session?.pending ? (
+          <div className="import-banner" role="status">
+            <p>
+              引き継ぎ待ちのメモが{session.pending}
+              件あります。100件の上限を超えた分も、このアカウントに安全に保持しています。メモを整理してから再試行できます。
+            </p>
+            <button disabled={authBusy} onClick={() => void retryImport()}>
+              引き継ぎを再試行
+            </button>
+            <button disabled={authBusy} onClick={() => void viewPending(0)}>
+              待機メモを見る
+            </button>
+          </div>
+        ) : null}
+        <main
+          inert={authBusy || undefined}
+          className={'workspace ' + (editor ? 'editor-open' : '')}
+        >
           <section className="notes-pane" aria-label="メモ一覧">
             <div className="page-heading">
               <div>
@@ -439,7 +673,9 @@ export function Notebook() {
             )}
             <p className="list-footnote">
               <LockKeyhole size={12} />
-              メモはこのブラウザのセッションに保存されます。
+              {session?.user
+                ? '同じ公開環境にログインすると、他の端末でもメモを使えます。'
+                : '匿名メモはこのブラウザだけで利用できます。'}
             </p>
           </section>
           {editor ? (
@@ -693,11 +929,11 @@ export function Notebook() {
             </span>
             <h2 id="privacy-title">あなたのメモの保存について</h2>
             <p>
-              ログイン不要です。このブラウザの匿名Cookieを鍵にして、サーバー上のあなたのメモだけを表示します。
+              Googleログインすると、同じ公開環境を開いたPC・スマホで同じメモを利用できます。GoogleのメールやDriveへのアクセスは求めません。ローカルDBと公開DBの同期機能はありません。
             </p>
             <p>
               <strong>
-                Cookieの削除・紛失、ブラウザ変更後は、メモを復旧できません。
+                匿名モードではCookieの削除・紛失、ブラウザ変更後は、メモを復旧できません。
               </strong>
               大切な内容は別の場所にも控えてください。共有端末では、同じブラウザの利用者がメモを閲覧できます。
             </p>
@@ -707,6 +943,7 @@ export function Notebook() {
             </p>
             <p>
               保存はボタンで行います。未保存の入力はページを閉じると失われます。メモは100件までです。
+              ログイン時にこのブラウザの匿名メモを引き継ぎます。上限を超えた分もアカウントの引き継ぎ待ちとして保持し、閲覧・再試行できます。共有端末では使い終わったらログアウトしてください。
             </p>
             <button
               className="primary-button"
@@ -714,6 +951,53 @@ export function Notebook() {
             >
               わかりました
             </button>
+          </dialog>
+        </div>
+      )}
+      {pendingOffset !== null && (
+        <div className="modal-backdrop">
+          <dialog
+            open
+            className="modal pending-modal"
+            aria-labelledby="pending-title"
+          >
+            <h2 id="pending-title">引き継ぎ待ちのメモ</h2>
+            <p>
+              このアカウントだけが閲覧できます。必要なら本文をコピーしてください。
+            </p>
+            <div className="pending-list">
+              {pendingNotes.map((n) => (
+                <article key={n.id}>
+                  <h3>{n.title}</h3>
+                  <textarea
+                    readOnly
+                    aria-label={n.title + 'の本文'}
+                    value={n.body}
+                  />
+                </article>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button
+                disabled={pendingOffset === 0}
+                onClick={() => void viewPending(pendingOffset - 20)}
+              >
+                前へ
+              </button>
+              <button
+                disabled={pendingOffset + 20 >= (session?.pending ?? 0)}
+                onClick={() => void viewPending(pendingOffset + 20)}
+              >
+                次へ
+              </button>
+              <button
+                autoFocus
+                className="secondary-button"
+                onClick={() => setPendingOffset(null)}
+              >
+                閉じる
+              </button>
+            </div>
           </dialog>
         </div>
       )}

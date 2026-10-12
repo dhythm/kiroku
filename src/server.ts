@@ -8,6 +8,8 @@ export default {
       : await handler.fetch(request)
     const secured = new Response(response.body, response)
     secured.headers.set('X-Content-Type-Options', 'nosniff')
+    if (url.pathname.startsWith('/api/'))
+      secured.headers.set('Cache-Control', 'no-store, private')
     secured.headers.set('Referrer-Policy', 'same-origin')
     secured.headers.set('X-Frame-Options', 'DENY')
     secured.headers.set(
