@@ -1,0 +1,1 @@
+CREATE INDEX `ai_owner` ON `ai_requests` (`owner`);

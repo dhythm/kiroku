@@ -1,0 +1,4 @@
+CREATE TRIGGER ai_retired_owner BEFORE INSERT ON ai_requests
+WHEN EXISTS (SELECT 1 FROM anonymous_claims WHERE owner = NEW.owner) BEGIN
+  SELECT RAISE(ABORT, 'OWNER_RETIRED');
+END;

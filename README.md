@@ -1,6 +1,6 @@
 # Kiroku — AI-powered Notes
 
-思いつきを、次の一歩に。日本語中心の匿名メモ帳MVPです。メモCRUD、タイトル・本文の検索、タグ、Workers AIによるワンクリック要約を備えています。AIが未設定のときは明確に無効表示します。
+思いつきを、次の一歩に。日本語中心のメモ帳です。メモCRUD、タイトル・本文の検索、タグ、Workers AIによるワンクリック要約を備えています。Googleログインで同じ公開環境のPC・スマホ間にメモを共有できます。認証未設定時も匿名モードで起動でき、GoogleログインとAIはそれぞれ明確に無効表示します。
 
 ## ローカルで起動
 
@@ -25,7 +25,7 @@ TanStack Start + React + Tailwind CSS / Cloudflare Workers / D1 / Drizzle / Work
 - Cookieには暗号学的な乱数32バイト（256bit）。サーバーはSHA-256のハッシュだけをD1の所有者として保存します。所有者をリクエスト本文やURLから受け取りません。
 - HTTPSでは `__Host-kiroku`、`Secure; HttpOnly; SameSite=Strict; Path=/`。有効期間1年。HTTPはlocalhostに限り開発用Cookieを使用します。
 - CRUD、検索、タグ絞り込み、要約の全処理に所有条件を付け、他セッションのIDは404。APIレスポンスにCookie値・所有者ハッシュを含めず、`no-store`。
-- **Cookieの削除・紛失、ブラウザ変更後は復旧できません。** ログイン、端末間同期、回復鍵はありません。共有端末・同一ブラウザでは利用者間のプライバシーを保証できません。機密情報の保管用途には向きません。
+- **未ログインの匿名メモはCookieの削除・紛失、ブラウザ変更後に復旧できません。** Googleログイン後のメモは同じ公開環境・同じGoogleアカウントで利用できます。共有端末では使い終わったらログアウトしてください。機密情報の保管用途には向きません。
 - 保存はボタンで行います。未保存表示、離脱時の確認、保存失敗時の本文保持。ページを閉じた後の未保存入力は復元できません。
 - タイトル120文字、本文8,000文字、タグ8個・各24文字、リクエスト40,000バイト。1セッション100メモ、サービス全体1,000メモ。DB triggerで同時作成でも容量制限を適用します。
 - メモ数の上限が100件なので一覧・検索は最大100件を返します。所有者＋更新日時indexにより他セッションの本文を検索しません。検索は300ms debounce。更新・削除・要約保存はversionによる競合検出を行います。
@@ -105,3 +105,47 @@ npm run deploy:dry          # アップロードしない。認証不要
 ## 未接続時に残る確認
 
 本番Cloudflare認証・Freeプラン・D1 binding/マイグレーション・workers.dev公開URL、実AIの日本語品質とneurons使用量、実環境のCPU枠、Safari/Firefox実機はローカルのみでは検証できません。Chromiumのモバイルviewport検証は実iPhoneのSafari検証ではありません。
+
+## Googleログインと匿名メモの引き継ぎ
+
+Better Auth **1.7.7**（公式`better-auth/minimal`）と **@better-auth/drizzle-adapter 1.7.7**を使用。独自のOAuth/JWT暗号実装はありません。[公式Drizzle adapter](https://better-auth.com/docs/adapters/drizzle)、[Google設定](https://better-auth.com/docs/authentication/google)、[TanStack統合](https://better-auth.com/docs/integrations/tanstack)を2026-10-12に確認しています。本アプリは同一WorkerのWeb-standard request handlerへ認証をmountするため、サーバー関数用Cookie pluginは使いません。
+
+同日、[公式security advisories](https://github.com/better-auth/better-auth/security/advisories)を確認し、[OAuth/Magic Link stateの問題](https://github.com/better-auth/better-auth/security/advisories/GHSA-965c-763c-88jm)・[adapterのrate-limit競合](https://github.com/better-auth/better-auth/security/advisories/GHSA-44jh-23m7-hpcf)の修正版1.7.7を固定しています。Magic Link、OAuth Proxy、SSO等のpluginは導入していません。依存更新時はauditと認証テストを実行してください。
+
+- 認証はGoogleの`openid email profile`だけ。追加scope、offlineアクセス、Gmail/Drive権限は求めません。クライアント指定のscope・redirect・ID token・account linkを受け付けず、ログイン開始先とcallback先をサーバーで固定します。
+- ライブラリがstateの一回限り消費、state Cookie照合、PKCE S256、コード交換を処理します。通常Googleコードフローに加え、ライブラリ自身のOIDC検証でID tokenの署名・issuer・audience・期限も確認します。nonce/stateの検証を無効化する設定、独自の暗号処理はありません。
+- 主体はGoogleの安定したprovider subjectからライブラリが作成するDB user ID。メールやclient ownerを所有者として信用しません。暗黙・明示的account linkingは無効です。同じemailの別provider subjectが現れても既存ユーザーへ結合しません。
+- HTTPSセッション・state Cookieは`__Host-kiroku-auth.*`、HttpOnly・Secure・SameSite=Lax・Path=/、Domainなし。OAuth callbackで必要なLaxだけを認証Cookieに使用し、既存匿名CookieはStrictのまま。セッションはD1で毎回検証し、7日で失効。Cookieキャッシュ・自動延長は使いません。
+- Googleのaccess/refresh/ID tokenは本人確認後のDB hookで保存対象から除去します。認証APIはログイン開始とGoogle callbackだけを公開。メール/パスワード、account link、token取得等の入口は公開しません。ライブラリのログは無効です。
+- ログイン後の初回画面でCSRF検証付きPOSTにより、同じブラウザの有効な匿名Cookieだけを確認。D1 `batch`の一つのtransactionで匿名所有者をuser IDに固定し、AI履歴を移し、100件までメモを移します。繰り返し・競合時もコピーせず、元のメモID・本文・タグ・要約を保持します。移行はversionを増やし、進行中の古い保存との競合を検出します。
+- 100件を超える分も削除しません。元の匿名owner行をそのアカウントに紐づく「引き継ぎ待ち」に保持し、本人だけが20件ずつ閲覧・本文コピーできます。通常メモを整理後に再試行すると空き枠まで移します。引き継ぎ待ちも同じGoogleアカウントなら別端末で閲覧・再試行でき、匿名Cookie消失やログアウトで失われません。
+- 引き継ぎ済み匿名資格はtombstoneで再利用不可。古い資格での作成・編集・削除・AI予約もDB triggerで拒否します。別ユーザーへ二重引き継ぎしません。AI枠はアカウントuser IDで端末をまたいで合算し、匿名履歴も含むのでCookie再発行でアカウント上限をリセットできません。全体予算・IP枠・同時実行1件は維持します。
+- ログアウトはライブラリによるサーバーセッション削除をD1で確認してから成功を返し、新しい匿名Cookieへ切り替えます。期限切れ/偽造認証Cookieでは匿名データへ黙ってfallbackせず401。画面は401・他タブの認証変更・フォーカス復帰時のidentity変更で古い本文を隠し、認証変更前の遅延応答も破棄します。
+- 一時的な通信/503でidentityを確認できない場合は、未保存入力を保持して表示だけを止め、同じidentityを再検証できたら復帰します。確定した401や別identityとは区別します。
+- D1の非対話transaction制約により、初回登録のuser保存直後にaccount保存が失敗する可能性があります。新しいGoogle本人確認が完了した後だけ、2分以上前のaccount/session/メモ/引き継ぎ資格/AI履歴を一切持たない孤立userを単一条件付き操作で回復します。既存データのあるuserを削除・emailだけでlinkしません。初回登録障害後は2分以上待ってから再ログインしてください。
+
+### 所有者が行うOAuth設定（未実施）
+
+アプリは次の4値が全て揃うまでGoogleログインを無効にします。以下は設定手順であり、OAuthクライアントの作成、秘密値の入力/保存、OAuth承認、Cloudflare認証は実行していません。
+
+| 環境変数               | 設定                                                                     |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `BETTER_AUTH_URL`      | 起動するoriginそのもの。末尾`/`なし、pathなし。本番HTTPS必須             |
+| `BETTER_AUTH_SECRET`   | 所有者が生成する十分にランダムな32文字以上のsecret。全デプロイで安定保持 |
+| `GOOGLE_CLIENT_ID`     | 所有者がGoogle Cloudで作成するWeb application OAuth clientのID           |
+| `GOOGLE_CLIENT_SECRET` | そのclientのsecret                                                       |
+
+1. 所有者がGoogle CloudのWeb application OAuth client/consent画面を用意し、ログイン用の`openid email profile`だけを設定します。アプリの公開状態・テストユーザー設定も所有者が確認してください。
+2. 本アプリ標準のローカルoriginは **`http://127.0.0.1:3000`**、登録する正確なredirect URIは **`http://127.0.0.1:3000/api/auth/callback/google`** です。`localhost`で使う場合は`BETTER_AUTH_URL=http://localhost:3000`に揃え、登録URIも`http://localhost:3000/api/auth/callback/google`に変えます。両方を混ぜないでください。
+3. 本番は実際に割り当てられたoriginを`BETTER_AUTH_URL`へ設定し、その値に **`/api/auth/callback/google`** を付けたURIを登録します。例えばoriginが`https://kiroku.YOUR-SUBDOMAIN.workers.dev`ならredirect URIは`https://kiroku.YOUR-SUBDOMAIN.workers.dev/api/auth/callback/google`。現在はCloudflare未認証で実subdomainが不明なので、本番の確定hostnameはまだありません。文字列`YOUR-SUBDOMAIN`のまま登録しないでください。
+4. ローカルの4値は所有者が`.dev.vars`に安全に設定。本番は`BETTER_AUTH_URL`を対象originに設定し、secretは所有者が`npx wrangler secret put BETTER_AUTH_SECRET`、`npx wrangler secret put GOOGLE_CLIENT_ID`、`npx wrangler secret put GOOGLE_CLIENT_SECRET`で入力します。secretを引数・PR・ログ・gitに貼らず、`VITE_`変数として公開しないでください。
+5. 既存データ保全のため、対象DBを確認してバックアップを取ってから`npm run db:remote`を適用します。新規migration 0003〜0006はauth/claimsテーブル・index・安全triggerの追加だけで、既存メモ/AI履歴を削除・再作成しません。バックアップは機密を含むのでgit対象外の安全な場所で保管してください。
+6. 無料プランの確認後に所有者がレビュー済みコードをデプロイし、同じ公開URLでPC/スマホから同じGoogleアカウントを使って確認します。**ローカルD1と別のローカルD1、ローカルD1と本番D1の同期ではありません。**
+
+OAuth開始/終了・session lookup・JWT検証にはCPUとD1枠を使います。軽量initializerを使用していますが、Workers FreeのCPU10msへの本番適合やGoogle/JWKS通信は本番接続後の計測が必要です。Paidへのupgrade・新規有料契約を前提にしません。AIは既定offのままです。
+
+### 認証の検証範囲
+
+`npm test`は本物のBetter Auth＋実SQLite/D1で、Googleのtoken/JWKS応答だけをテスト内で模擬します。state/PKCE、署名/audience拒否、取消/失敗/重複callback、メールだけのlink拒否、別account/別device、匿名移行/二重claim/上限超過/rollback、ログアウト失敗/期限切れを検証。`npm run build && npm run test:worker`では、本番bundleをworkerdで動かし、設定済み認証のPKCE生成・D1 state保存・偽Cookie拒否を確認します。E2Eのログイン済みUIはテストfixtureであり、本番コードにmock認証はありません。
+
+実Googleのconsent・実クライアント/secret・本番callback/PCスマホ間共有・本番CPU/neurons・実Safari/Firefoxは未検証です。これらは所有者が設定した後に確認してください。

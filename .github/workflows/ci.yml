@@ -27,6 +27,7 @@ jobs:
       - run: npm run typecheck && npm run lint
       - run: npm run format:check
       - run: npm test
+      - run: npm run test:worker
       - run: npm run db:local
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e

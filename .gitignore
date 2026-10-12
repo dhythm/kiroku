@@ -8,5 +8,6 @@ dist/
 test-results/
 playwright-report/
 screenshots/
+backups/
 *.log
 worker-configuration.d.ts

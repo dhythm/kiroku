@@ -31,6 +31,7 @@ export const aiRequests = sqliteTable(
     index('ai_day_owner').on(t.day, t.owner),
     index('ai_day_ip').on(t.day, t.ip),
     index('ai_active').on(t.active),
+    index('ai_owner').on(t.owner),
   ],
 )
 export const aiControl = sqliteTable('ai_control', {

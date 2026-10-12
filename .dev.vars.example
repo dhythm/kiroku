@@ -1,3 +1,8 @@
 # AI remains disabled locally. Never add credentials to this file.
 AI_ENABLED=false
 FREE_PLAN_CONFIRMED=false
+# Google login remains disabled until the owner supplies all four values.
+BETTER_AUTH_URL=http://127.0.0.1:3000
+BETTER_AUTH_SECRET=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=

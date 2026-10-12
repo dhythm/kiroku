@@ -25,9 +25,9 @@ test('real Worker UI: CRUD, search, tags, privacy, disabled AI, delete confirmat
   const { notes } = await list.json()
   const id = notes.find((n: { title: string }) => n.title === '朝のアイデア').id
   const other = await browser.newContext()
-  await other.request.get('http://127.0.0.1:3000/api/session')
+  await other.request.get('http://127.0.0.1:3100/api/session')
   expect(
-    (await other.request.get('http://127.0.0.1:3000/api/notes/' + id)).status(),
+    (await other.request.get('http://127.0.0.1:3100/api/notes/' + id)).status(),
   ).toBe(404)
   await other.close()
   mkdirSync('screenshots', { recursive: true })
